@@ -1,166 +1,249 @@
-import re
+import json
+import os
+
+from groq import Groq
+from dotenv import load_dotenv
+
+from .models import Invoice
 
 
-def find_first_match(patterns, text):
-    """Return the first matching group from a list of regex patterns."""
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-    return ""
+load_dotenv()
+
+client = Groq(
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 
-def extract_invoice_data(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+SYSTEM_PROMPT = """
+You are an invoice data extraction system.
 
-    data = {
-        "vendor_name": "",
-        "company_name": "",
-        "address": "",
-        "phone": "",
-        "invoice_number": "",
-        "invoice_date": "",
-        "invoice_time": "",
-        "cashier": "",
-        "gst_number": "",
-        "total_amount": "",
-        "cash_received": "",
-        "change": "",
-        "items": [],
+Extract structured invoice information from the OCR text.
+
+Rules:
+1. Extract only information present in the OCR text.
+2. Never invent or guess information.
+3. Use null when information is missing.
+4. Extract all identifiable invoice items.
+5. Numbers must be returned as numbers.
+6. Normalize dates to YYYY-MM-DD when possible.
+7. Preserve GSTIN exactly as found.
+8. Correct obvious OCR errors only when the intended value is clear.
+9. Do not calculate missing values.
+10. Return only the requested JSON structure.
+"""
+
+
+def get_invoice_schema():
+
+    return {
+        "type": "object",
+
+        "properties": {
+
+            "invoice_number": {
+                "type": ["string", "null"]
+            },
+
+            "invoice_date": {
+                "type": ["string", "null"]
+            },
+
+            "vendor": {
+                "type": "object",
+
+                "properties": {
+                    "name": {
+                        "type": ["string", "null"]
+                    },
+                    "gstin": {
+                        "type": ["string", "null"]
+                    },
+                    "address": {
+                        "type": ["string", "null"]
+                    },
+                    "phone": {
+                        "type": ["string", "null"]
+                    },
+                    "email": {
+                        "type": ["string", "null"]
+                    }
+                },
+
+                "required": [
+                    "name",
+                    "gstin",
+                    "address",
+                    "phone",
+                    "email"
+                ],
+
+                "additionalProperties": False
+            },
+
+            "customer": {
+                "type": "object",
+
+                "properties": {
+                    "name": {
+                        "type": ["string", "null"]
+                    },
+                    "gstin": {
+                        "type": ["string", "null"]
+                    },
+                    "address": {
+                        "type": ["string", "null"]
+                    },
+                    "phone": {
+                        "type": ["string", "null"]
+                    },
+                    "email": {
+                        "type": ["string", "null"]
+                    }
+                },
+
+                "required": [
+                    "name",
+                    "gstin",
+                    "address",
+                    "phone",
+                    "email"
+                ],
+
+                "additionalProperties": False
+            },
+
+            "items": {
+                "type": "array",
+
+                "items": {
+                    "type": "object",
+
+                    "properties": {
+                        "description": {
+                            "type": "string"
+                        },
+                        "quantity": {
+                            "type": ["number", "null"]
+                        },
+                        "unit_price": {
+                            "type": ["number", "null"]
+                        },
+                        "tax_rate": {
+                            "type": ["number", "null"]
+                        },
+                        "amount": {
+                            "type": ["number", "null"]
+                        }
+                    },
+
+                    "required": [
+                        "description",
+                        "quantity",
+                        "unit_price",
+                        "tax_rate",
+                        "amount"
+                    ],
+
+                    "additionalProperties": False
+                }
+            },
+
+            "subtotal": {
+                "type": ["number", "null"]
+            },
+
+            "tax": {
+                "type": ["number", "null"]
+            },
+
+            "total": {
+                "type": ["number", "null"]
+            },
+
+            "currency": {
+                "type": ["string", "null"]
+            }
+        },
+
+        "required": [
+            "invoice_number",
+            "invoice_date",
+            "vendor",
+            "customer",
+            "items",
+            "subtotal",
+            "tax",
+            "total",
+            "currency"
+        ],
+
+        "additionalProperties": False
     }
 
-    if not lines:
-        return data
 
-    # ----------------------------
-    # Vendor / Company
-    # ----------------------------
-    data["vendor_name"] = lines[0] if len(lines) > 0 else ""
-    data["company_name"] = lines[1] if len(lines) > 1 else ""
+def extract_invoice_data(ocr_text: str):
 
-    # ----------------------------
-    # Address
-    # ----------------------------
-    address_lines = []
-    for line in lines[2:8]:
-        # Stop at phone, Cash Bill, or Date
-        if (
-            re.search(r"\d{2,4}[-\s]?\d{3,4}", line)
-            or "Cash Bill" in line
-            or "Date" in line
-        ):
-            break
-        address_lines.append(line)
+    if not ocr_text or not ocr_text.strip():
+        raise ValueError("OCR text is empty")
 
-    data["address"] = ", ".join(address_lines)
+    completion = client.chat.completions.create(
 
-    # ----------------------------
-    # Phone
-    # ----------------------------
-    phone_patterns = [
-        r"(\d{2,4}\s*[-\s]\s*\d{3,4}\s*\d{3,4})",  # Handles 07-355 2616
-        r"(\d{2,4}\s*[-\s]\s*\d{6,8})",
-    ]
-    data["phone"] = find_first_match(phone_patterns, text)
+        # Your model
+        model="openai/gpt-oss-120b",
 
-    # ----------------------------
-    # Invoice Number
-    # ----------------------------
-    invoice_patterns = [
-        r"Cash\s*Bill\s*[:#]?\s*([A-Za-z0-9\-]+)",
-        r"Invoice\s*No\.?\s*[:#]?\s*([A-Za-z0-9\-]+)",
-        r"Bill\s*No\.?\s*[:#]?\s*([A-Za-z0-9\-]+)",
-    ]
-    data["invoice_number"] = find_first_match(invoice_patterns, text)
+        messages=[
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": f"""
+Extract invoice data from this OCR text:
 
-    # ----------------------------
-    # Date & Time
-    # ----------------------------
-    date_match = re.search(r"(\d{2}[/-]\d{2}[/-]\d{4})", text)
-    if date_match:
-        data["invoice_date"] = date_match.group(1)
+-------------------------
+{ocr_text}
+-------------------------
+"""
+            }
+        ],
 
-    time_match = re.search(
-        r"(\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)", text, re.IGNORECASE
-    )
-    if time_match:
-        data["invoice_time"] = time_match.group(1)
+        # IMPORTANT:
+        # Do NOT use stream=True for DB extraction
+        stream=False,
 
-    # ----------------------------
-    # Cashier
-    # ----------------------------
-    cashier_patterns = [r"Cashier\s*[:#]?\s*([A-Za-z0-9]+)"]
-    data["cashier"] = find_first_match(cashier_patterns, text)
+        # Structured JSON
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "invoice_extraction",
+                "strict": True,
+                "schema": get_invoice_schema()
+            }
+        },
 
-    # ----------------------------
-    # GST
-    # ----------------------------
-    gst_patterns = [
-        r"GST\s*(?:ID|No)?\.?\s*[:#]?\s*([0-9A-Za-z]{10,15})",
-        r"Reg\s*No\.?\s*[:#]?\s*([0-9A-Za-z\-]+)",
-    ]
-    data["gst_number"] = find_first_match(gst_patterns, text)
+        temperature=0,
 
-    # ----------------------------
-    # Totals & Cash
-    # ----------------------------
-    total_patterns = [
-        r"Total\s*Amount\s*[:#]?\s*([0-9]+\.[0-9]{2})",
-        r"Total\s*[:#]?\s*([0-9]+\.[0-9]{2})",
-    ]
-    data["total_amount"] = find_first_match(total_patterns, text)
+        max_completion_tokens=4096,
 
-    cash_patterns = [
-        r"Cash\s*Received\s*[:#]?\s*([0-9]+\.[0-9]{2})",
-        r"Cash\s*[:#]?\s*([0-9]+\.[0-9]{2})",
-    ]
-    data["cash_received"] = find_first_match(cash_patterns, text)
-
-    change_patterns = [r"Change\s*[:#]?\s*([0-9]+\.[0-9]{2})"]
-    data["change"] = find_first_match(change_patterns, text)
-
-    # ----------------------------
-    # Items Parsing
-    # ----------------------------
-    # Matches: [Description] [Qty] [Price] [Amount]
-    # Example: "Plastic   2   15.50   31.00"
-    item_pattern = re.compile(
-        r"^([A-Za-z0-9\s/&\-\.\(\)]+?)\s{2,}(\d+)\s+([0-9]+\.[0-9]{2})\s+([0-9]+\.[0-9]{2})$"
+        reasoning_effort="medium"
     )
 
-    # Fallback pattern if Qty is missing: [Description] [Price/Amount]
-    fallback_item_pattern = re.compile(
-        r"^([A-Za-z0-9\s/&\-\.\(\)]+?)\s{2,}([0-9]+\.[0-9]{2})$"
-    )
+    content = completion.choices[0].message.content
 
-    for line in lines:
-        # Ignore structural keyword lines
-        if any(
-            kw in line.lower()
-            for kw in ["total", "subtotal", "cash", "change", "description"]
-        ):
-            continue
+    if not content:
+        raise ValueError("Groq returned empty response")
 
-        match = item_pattern.search(line)
-        if match:
-            data["items"].append(
-                {
-                    "description": match.group(1).strip(),
-                    "qty": match.group(2).strip(),
-                    "price": match.group(3).strip(),
-                    "amount": match.group(4).strip(),
-                }
-            )
-        else:
-            fallback_match = fallback_item_pattern.search(line)
-            if fallback_match:
-                data["items"].append(
-                    {
-                        "description": fallback_match.group(1).strip(),
-                        "qty": "1",
-                        "price": fallback_match.group(2).strip(),
-                        "amount": fallback_match.group(2).strip(),
-                    }
-                )
+    try:
+        data = json.loads(content)
 
-    return data
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Invalid JSON returned by Groq: {e}"
+        )
+
+    # Pydantic validation
+    invoice = Invoice.model_validate(data)
+
+    # Return normal Python dict to FastAPI
+    return invoice.model_dump()

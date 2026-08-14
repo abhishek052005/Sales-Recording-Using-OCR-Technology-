@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 
+
 def deskew(image):
     """Automatically straighten the image"""
 
@@ -31,40 +32,62 @@ def deskew(image):
     return rotated
 
 
-
 def preprocess_image(input_path, output_path):
+
     image = cv2.imread(input_path)
+
     if image is None:
-        raise Exception(f"cannot read image:{input_path}")
+        raise Exception(f"Cannot read image : {input_path}")
 
+    # -----------------------
     # Resize
+    # -----------------------
     image = cv2.resize(
-        image,None,fx=2,fy=2,interpolation=cv2.resize
+        image,
+        None,
+        fx=2,
+        fy=2,
+        interpolation=cv2.INTER_CUBIC
     )
-    #gray
-    gray = cv2.cvtcolor(image, cv2.COLOR_BGR2GRAY)
 
-    #CLAHE
+    # -----------------------
+    # Gray
+    # -----------------------
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # -----------------------
+    # CLAHE
+    # -----------------------
     clahe = cv2.createCLAHE(
-        clipLimit=2.0, titleGridSize=(8,8)
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
     )
+
     gray = clahe.apply(gray)
 
+    # -----------------------
     # Denoise
+    # -----------------------
     gray = cv2.fastNlMeansDenoising(
-        gray,None,h=12
+        gray,
+        None,
+        h=12
     )
 
-
+    # -----------------------
     # Sharpen
+    # -----------------------
     kernel = np.array([
         [0,-1,0],
         [-1,5,-1],
         [0,-1,0]
     ])
+
     gray = cv2.filter2D(gray,-1,kernel)
 
+    # -----------------------
     # Threshold
+    # -----------------------
     thresh = cv2.adaptiveThreshold(
         gray,
         255,
@@ -74,7 +97,9 @@ def preprocess_image(input_path, output_path):
         8
     )
 
+    # -----------------------
     # Morphology
+    # -----------------------
     kernel = np.ones((2,2),np.uint8)
 
     thresh = cv2.morphologyEx(
@@ -89,15 +114,15 @@ def preprocess_image(input_path, output_path):
         iterations=1
     )
 
-    
+    # -----------------------
     # Deskew
+    # -----------------------
     thresh = deskew(thresh)
     gray = deskew(gray)
 
-
-
+    # -----------------------
     # File Names
-
+    # -----------------------
     base = os.path.splitext(output_path)[0]
 
     threshold_path = base + "_thresh.png"
